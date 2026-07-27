@@ -1,4 +1,4 @@
-name: Build selected SPIKE-RT app
+name: Build selected SPIKE-RT app and deploy flasher
 
 on:
   workflow_dispatch:
@@ -18,6 +18,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: selected-pages-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   SPIKE_RT_REF: v0.2.0
@@ -179,7 +183,7 @@ jobs:
               arm-none-eabi-size asp > size.txt
             ' 2>&1 | tee build-selected.log
 
-      - name: Prepare selected firmware artifact
+      - name: Prepare firmware artifact and Pages site
         shell: bash
         env:
           APP_NAME: ${{ inputs.app }}
@@ -188,12 +192,18 @@ jobs:
 
           BUILD_DIR="spike-rt/build/obj-primehub_${APP_NAME}"
           OUTPUT_DIR="selected-output/${APP_NAME}"
-          mkdir -p "${OUTPUT_DIR}"
+          SITE_FIRMWARE="site/firmware"
 
-          cp "${BUILD_DIR}/asp.bin" "${OUTPUT_DIR}/asp.bin"
-          cp "${BUILD_DIR}/asp.bin.sha256" "${OUTPUT_DIR}/asp.bin.sha256"
-          cp "${BUILD_DIR}/size.txt" "${OUTPUT_DIR}/size.txt"
-          cp build-selected.log "${OUTPUT_DIR}/build.log"
+          rm -rf selected-output site
+          mkdir -p "${OUTPUT_DIR}" "${SITE_FIRMWARE}"
+          cp -a web/. site/
+
+          for DEST in "${OUTPUT_DIR}" "${SITE_FIRMWARE}"; do
+            cp "${BUILD_DIR}/asp.bin" "${DEST}/asp.bin"
+            cp "${BUILD_DIR}/asp.bin.sha256" "${DEST}/asp.bin.sha256"
+            cp "${BUILD_DIR}/size.txt" "${DEST}/size.txt"
+            cp build-selected.log "${DEST}/build.log"
+          done
           cp "apps/${APP_NAME}/project.json" "${OUTPUT_DIR}/project.json"
 
           export APP_NAME
@@ -213,6 +223,9 @@ jobs:
           metadata = json.loads(
               Path(f"apps/{app_name}/project.json").read_text(encoding="utf-8")
           )
+          if metadata.get("id") != app_name:
+              raise SystemExit(f"project.json id must be {app_name!r}")
+
           manifest = {
               "appId": app_name,
               "appName": metadata.get("name", app_name),
@@ -234,8 +247,13 @@ jobs:
               "buildMode": "selected",
           }
 
+          text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
           Path(f"selected-output/{app_name}/manifest.json").write_text(
-              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              text,
+              encoding="utf-8",
+          )
+          Path("site/firmware/manifest.json").write_text(
+              text,
               encoding="utf-8",
           )
           PY
@@ -257,3 +275,31 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+      - name: Configure Pages
+        if: github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build-selected
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
