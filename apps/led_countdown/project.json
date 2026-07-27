@@ -1,0 +1,7 @@
+{
+  "id": "led_countdown",
+  "name": "LED Countdown",
+  "description": "5×5ディスプレイへ9から0まで1秒ごとにカウントダウン表示します。",
+  "warning": "",
+  "origin": "SPIKE-RT公式LED例から派生"
+}

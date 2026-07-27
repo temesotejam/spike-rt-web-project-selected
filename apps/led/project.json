@@ -1,0 +1,7 @@
+{
+  "id": "led",
+  "name": "LED Alphabet",
+  "description": "5×5ディスプレイへaからzまで2秒ごとに表示します。",
+  "warning": "",
+  "origin": "SPIKE-RT v0.2.0公式サンプル"
+}

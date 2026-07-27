@@ -1,0 +1,259 @@
+name: Build selected SPIKE-RT app
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "コンパイルするプログラム"
+        required: true
+        type: choice
+        default: myapp
+        options:
+          - myapp
+          - button
+          - led
+          - led_countdown
+          - led_fast
+          - motor
+
+permissions:
+  contents: read
+
+env:
+  SPIKE_RT_REF: v0.2.0
+  SPIKE_RT_IMAGE: spike-rt-builder:v0.2.0-slim
+  SPIKE_RT_APP_DIR: selected_app
+
+jobs:
+  build-selected:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Checkout SPIKE-RT read-only
+        uses: actions/checkout@v6
+        with:
+          repository: spike-rt/spike-rt
+          ref: ${{ env.SPIKE_RT_REF }}
+          path: spike-rt
+          submodules: true
+          persist-credentials: false
+
+      - name: Disable push to SPIKE-RT remote
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git -C spike-rt remote set-url --push origin DISABLED
+          git -C spike-rt remote -v
+
+      - name: Validate and copy selected application
+        shell: bash
+        env:
+          APP_NAME: ${{ inputs.app }}
+        run: |
+          set -euxo pipefail
+
+          [[ "${APP_NAME}" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]]
+          SOURCE_DIR="apps/${APP_NAME}"
+          TARGET_DIR="spike-rt/${SPIKE_RT_APP_DIR}"
+
+          test -d "${SOURCE_DIR}"
+          test -f "${SOURCE_DIR}/${APP_NAME}.c"
+          test -f "${SOURCE_DIR}/project.json"
+          python3 -m json.tool "${SOURCE_DIR}/project.json" >/dev/null
+
+          rm -rf "${TARGET_DIR}"
+          mkdir -p "${TARGET_DIR}"
+          cp -a "${SOURCE_DIR}/." "${TARGET_DIR}/"
+
+          if [[ ! -f "${TARGET_DIR}/${APP_NAME}.h" ]]; then
+            HEADER_GUARD="$(printf '%s_H' "${APP_NAME}" |
+              tr '[:lower:]' '[:upper:]' |
+              tr -c 'A-Z0-9_' '_')"
+            printf '%s\n' \
+              "#ifndef ${HEADER_GUARD}" \
+              "#define ${HEADER_GUARD}" \
+              "#include <kernel.h>" \
+              "#define MAIN_PRIORITY 5" \
+              "#define MAIN_STACK_SIZE 4096" \
+              "#define STACK_SIZE MAIN_STACK_SIZE" \
+              "#ifndef TOPPERS_MACRO_ONLY" \
+              "extern void main_task(intptr_t exinf);" \
+              "#endif" \
+              "#endif" \
+              > "${TARGET_DIR}/${APP_NAME}.h"
+          fi
+
+          if [[ ! -f "${TARGET_DIR}/${APP_NAME}.cfg" ]]; then
+            printf '%s\n' \
+              'INCLUDE("tecsgen.cfg");' \
+              "#include \"${APP_NAME}.h\"" \
+              'CRE_TSK(APP_MAIN_TASK, { TA_ACT, 0, main_task, MAIN_PRIORITY, MAIN_STACK_SIZE, NULL });' \
+              > "${TARGET_DIR}/${APP_NAME}.cfg"
+          fi
+
+          if [[ ! -f "${TARGET_DIR}/${APP_NAME}.cdl" ]]; then
+            cp spike-rt/sample/motor/motor.cdl \
+              "${TARGET_DIR}/${APP_NAME}.cdl"
+          fi
+
+      - name: Patch pinned builder Dockerfile dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          DOCKERFILE="spike-rt/tools/docker/slim.dockerfile"
+          sed -i \
+            's/curl make libncurses5 python3 git/curl bzip2 make libncurses5 python3 git/' \
+            "${DOCKERFILE}"
+          grep -q "curl bzip2 make libncurses5 python3 git" "${DOCKERFILE}"
+
+      - name: Build pinned SPIKE-RT builder image
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker build \
+            --file spike-rt/tools/docker/slim.dockerfile \
+            --tag "${SPIKE_RT_IMAGE}" \
+            spike-rt/tools/docker
+
+      - name: Build selected firmware
+        shell: bash
+        env:
+          APP_NAME: ${{ inputs.app }}
+        run: |
+          set -o pipefail
+
+          docker run --rm \
+            -e APP_NAME="${APP_NAME}" \
+            -e SPIKE_RT_APP_DIR="${SPIKE_RT_APP_DIR}" \
+            -v "${GITHUB_WORKSPACE}/spike-rt:/work" \
+            -w /work \
+            "${SPIKE_RT_IMAGE}" \
+            bash -c '
+              set -euxo pipefail
+              export PATH="/usr/local/gcc-arm-none-eabi/bin:${PATH}"
+              command -v arm-none-eabi-gcc
+              arm-none-eabi-gcc --version
+              command -v arm-none-eabi-size
+              git config --global --add safe.directory "*"
+
+              echo "=== Configure kernel ==="
+              mkdir -p build/obj-primehub_kernel
+              cd build/obj-primehub_kernel
+              ../../asp3/configure.rb \
+                -T primehub_gcc \
+                -f \
+                -m ../../common/kernel.mk
+
+              echo "=== Build kernel ==="
+              make -j2 libkernel.a
+              cd ../..
+
+              echo "=== Configure application: ${APP_NAME} ==="
+              BUILD_DIR="build/obj-primehub_${APP_NAME}"
+              rm -rf "${BUILD_DIR}"
+              mkdir -p "${BUILD_DIR}"
+              cd "${BUILD_DIR}"
+
+              ../../asp3/configure.rb \
+                -T primehub_gcc \
+                -L ../obj-primehub_kernel \
+                -a "../../${SPIKE_RT_APP_DIR}/" \
+                -A "${APP_NAME}" \
+                -m ../../common/app.mk
+
+              echo "=== Build application: ${APP_NAME} ==="
+              rm -f asp asp.bin asp.bin.sha256 size.txt
+              make -j2
+
+              test -s asp.bin
+              sha256sum asp.bin > asp.bin.sha256
+              arm-none-eabi-size asp > size.txt
+            ' 2>&1 | tee build-selected.log
+
+      - name: Prepare selected firmware artifact
+        shell: bash
+        env:
+          APP_NAME: ${{ inputs.app }}
+        run: |
+          set -euxo pipefail
+
+          BUILD_DIR="spike-rt/build/obj-primehub_${APP_NAME}"
+          OUTPUT_DIR="selected-output/${APP_NAME}"
+          mkdir -p "${OUTPUT_DIR}"
+
+          cp "${BUILD_DIR}/asp.bin" "${OUTPUT_DIR}/asp.bin"
+          cp "${BUILD_DIR}/asp.bin.sha256" "${OUTPUT_DIR}/asp.bin.sha256"
+          cp "${BUILD_DIR}/size.txt" "${OUTPUT_DIR}/size.txt"
+          cp build-selected.log "${OUTPUT_DIR}/build.log"
+          cp "apps/${APP_NAME}/project.json" "${OUTPUT_DIR}/project.json"
+
+          export APP_NAME
+          export FIRMWARE_SHA256
+          export FIRMWARE_SIZE
+          export BUILT_AT
+          FIRMWARE_SHA256="$(cut -d ' ' -f 1 "${BUILD_DIR}/asp.bin.sha256")"
+          FIRMWARE_SIZE="$(stat -c '%s' "${BUILD_DIR}/asp.bin")"
+          BUILT_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          app_name = os.environ["APP_NAME"]
+          metadata = json.loads(
+              Path(f"apps/{app_name}/project.json").read_text(encoding="utf-8")
+          )
+          manifest = {
+              "appId": app_name,
+              "appName": metadata.get("name", app_name),
+              "description": metadata.get("description", ""),
+              "warning": metadata.get("warning", ""),
+              "origin": metadata.get("origin", ""),
+              "file": "asp.bin",
+              "loadAddress": "0x08008000",
+              "maxBytes": 992 * 1024,
+              "size": int(os.environ["FIRMWARE_SIZE"]),
+              "sha256": os.environ["FIRMWARE_SHA256"],
+              "sourceCommit": os.environ["GITHUB_SHA"],
+              "sourcePath": f"apps/{app_name}",
+              "spikeRtCommit": os.environ["SPIKE_RT_REF"],
+              "runNumber": os.environ["GITHUB_RUN_NUMBER"],
+              "runId": os.environ["GITHUB_RUN_ID"],
+              "builtAt": os.environ["BUILT_AT"],
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "buildMode": "selected",
+          }
+
+          Path(f"selected-output/{app_name}/manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: selected-build-log-${{ inputs.app }}-${{ github.run_number }}
+          path: build-selected.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload selected firmware
+        uses: actions/upload-artifact@v7
+        with:
+          name: spike-rt-${{ inputs.app }}-${{ github.run_number }}
+          path: selected-output/${{ inputs.app }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

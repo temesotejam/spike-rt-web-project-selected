@@ -1,0 +1,7 @@
+{
+  "id": "myapp",
+  "name": "My App",
+  "description": "起動ログを出した後、1秒周期で待機し続ける最小構成です。",
+  "warning": "",
+  "origin": "このリポジトリ"
+}
