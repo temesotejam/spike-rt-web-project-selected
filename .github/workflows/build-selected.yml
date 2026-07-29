@@ -265,7 +265,7 @@ jobs:
           name: selected-build-log-${{ inputs.app }}-${{ github.run_number }}
           path: build-selected.log
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 1
 
       - name: Upload selected firmware
         uses: actions/upload-artifact@v7
@@ -273,7 +273,7 @@ jobs:
           name: spike-rt-${{ inputs.app }}-${{ github.run_number }}
           path: selected-output/${{ inputs.app }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
           compression-level: 0
 
       - name: Configure Pages
