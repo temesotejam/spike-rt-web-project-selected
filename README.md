@@ -82,7 +82,10 @@ Actionsでアプリを1個選択
 → asp.binをArtifactへ保存
 → 同じasp.binをPagesへ公開
 → PagesでHubに接続
-→ 消去・書き込み・全バイト読み戻し検証・再起動
+→ 必要セクタ消去
+→ 0x08008000へ分割書き込み
+→ 各DNLOAD後のDFU状態と転送サイズを確認
+→ 0x08000000をブート先に指定してDFU終了・再起動
 ```
 
 Artifact名は次の形式です。
@@ -158,11 +161,12 @@ apps/new_app/
 - 出力: `asp.bin`
 - USB: WebUSB / DfuSe
 - Hub VID/PID: `0x0694` / `0x0008`
-- 書き込み先: `0x08008000`
+- SPIKE-RT書き込み先: `0x08008000`
+- DFU終了時のブート先: `0x08000000`
 - 最大サイズ: 992 KiB
-- 検証: 全バイト読み戻し比較
+- 検証: 各`DNLOAD`後のDFU状態とUSB転送サイズを確認
 
-WebUSB部分は実装済みですが、SPIKE Hub実機による最終確認はまだです。
+書き込み後の`UPLOAD`による全バイト読み戻しは、SPIKE Prime実機で転送エラーになるため使用しません。同じ書き込み方式は全件ビルド版`spike-rt-web-project`で、DFU接続、セクタ消去、ファームウェア書き込み、DFU終了・再起動、`LED countdown`のSPIKE-RTアプリ起動まで実機確認済みです。
 
 ## 安全対策
 
