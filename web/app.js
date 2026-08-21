@@ -40,7 +40,7 @@ const PHASE_RANGES = Object.freeze({
   prepare: [0, 5, "準備中"],
   erase: [5, 30, "フラッシュ消去中"],
   write: [30, 75, "書き込み中"],
-  verify: [75, 95, "読み戻し検証中"],
+  verify: [75, 95, "DFU状態確認中"],
   manifest: [95, 100, "再起動中"],
 });
 
@@ -290,7 +290,7 @@ async function flashFirmware() {
     });
     elements.progress.value = 100;
     elements.progressLabel.textContent = "完了: 100%";
-    appendLog("書き込み・読み戻し検証・再起動要求が完了しました。");
+    appendLog("書き込み・DFU状態確認・再起動要求が完了しました。");
     clearConnectedDevice("再起動済み（USB切断）");
   } catch (error) {
     elements.progressLabel.textContent = "失敗";
