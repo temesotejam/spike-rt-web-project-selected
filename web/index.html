@@ -69,7 +69,7 @@
 
     <section class="card">
       <h2>3. 書き込み</h2>
-      <p><code>0x08008000</code>からのアプリ領域だけを書き換えます。992 KiB超過は拒否し、消去、書き込み、全バイト読み戻し検証、再起動の順に処理します。</p>
+      <p><code>0x08008000</code>からのアプリ領域だけを書き換えます。992 KiB超過は拒否し、消去、分割書き込み、DFU状態確認、ブート先<code>0x08000000</code>を指定したDFU終了・再起動の順に処理します。</p>
       <label class="confirmation">
         <input id="confirm-safety" type="checkbox">
         <span>対象がSPIKE Prime HubのDFUモードであり、処理中にUSBケーブルを抜かないことを確認しました。</span>
@@ -80,10 +80,10 @@
       <p id="progress-label" class="progress-label">待機中</p>
       <progress id="progress" max="100" value="0"></progress>
       <pre id="log" aria-live="polite">準備完了</pre>
-      <p class="notice">WebUSB書き込み機能は実装済みですが、SPIKE Hub実機による最終確認はまだです。</p>
+      <p class="notice">同じWebUSB書き込み方式は全件ビルド版でSPIKE Prime実機のDFU接続、消去、書き込み、再起動、SPIKE-RTアプリ起動まで確認済みです。全バイトUPLOAD読み戻しは使用せず、各DNLOAD後のDFU状態と転送サイズを確認します。</p>
     </section>
 
-    <footer><p>LEGO SPIKE Prime Hub / VID 0694 / PID 0008 / DfuSe / 0x08008000</p></footer>
+    <footer><p>LEGO SPIKE Prime Hub / VID 0694 / PID 0008 / DfuSe / SPIKE-RT 0x08008000 / boot 0x08000000</p></footer>
   </main>
   <script type="module" src="./app.js"></script>
 </body>

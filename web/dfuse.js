@@ -1,5 +1,6 @@
 import { DFU_STATE, DFU_STATUS_OK } from "./dfu.js";
 
+export const SPIKE_BOOT_ADDRESS = 0x08000000;
 export const SPIKE_RT_LOAD_ADDRESS = 0x08008000;
 export const SPIKE_RT_MAX_BYTES = 992 * 1024;
 export const SPIKE_FLASH_END = 0x08100000;
@@ -15,6 +16,12 @@ const FLASH_SEGMENTS = Object.freeze([
 
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isExpectedResetError(error) {
+  return /disconnected|unavailable|device was disconnected|NotFoundError|NetworkError|transfer error|Unable to reset/i.test(
+    messageOf(error),
+  );
 }
 
 function commandPayload(command, address) {
@@ -114,9 +121,9 @@ export class SpikeDfuSeFlasher {
       const status = await this.device.pollUntil(
         (current) => current.state === DFU_STATE.DNLOAD_IDLE,
       );
-      if (status.status !== DFU_STATUS_OK) {
+      if (status.status !== DFU_STATUS_OK || status.state !== DFU_STATE.DNLOAD_IDLE) {
         throw new Error(
-          `書き込みに失敗しました (0x${address.toString(16)}, status=${status.status})。`,
+          `書き込みに失敗しました (0x${address.toString(16)}, state=${status.state}, status=${status.status})。`,
         );
       }
       if (written !== length) {
@@ -127,50 +134,21 @@ export class SpikeDfuSeFlasher {
     }
   }
 
-  async verify(startAddress, firmware) {
-    const transferSize = this.device.transferSize;
-    await this.device.abortToIdle();
-    await this.setAddress(startAddress);
-    await this.device.abortToIdle();
-
-    let offset = 0;
-    let blockNumber = 2;
-    this.onProgress("verify", 0, firmware.byteLength);
-
-    try {
-      while (offset < firmware.byteLength) {
-        const length = Math.min(transferSize, firmware.byteLength - offset);
-        const data = await this.device.upload(length, blockNumber);
-        const readback = new Uint8Array(
-          data.buffer,
-          data.byteOffset,
-          data.byteLength,
-        );
-        if (readback.byteLength !== length) {
-          throw new Error(
-            `読み戻しサイズが一致しません (${readback.byteLength}/${length})。`,
-          );
-        }
-        const expected = new Uint8Array(firmware, offset, length);
-        for (let index = 0; index < length; index += 1) {
-          if (readback[index] !== expected[index]) {
-            const address = startAddress + offset + index;
-            throw new Error(
-              `検証不一致: 0x${address.toString(16).padStart(8, "0")}`,
-            );
-          }
-        }
-        offset += length;
-        blockNumber += 1;
-        this.onProgress("verify", offset, firmware.byteLength);
-      }
-    } finally {
-      await this.device.abortToIdle();
+  async verifyWriteState() {
+    this.onProgress("verify", 0, 1);
+    const status = await this.device.getStatus();
+    if (status.status !== DFU_STATUS_OK || status.state !== DFU_STATE.DNLOAD_IDLE) {
+      throw new Error(
+        `書き込み完了状態を確認できません (state=${status.state}, status=${status.status})。`,
+      );
     }
+    this.onProgress("verify", 1, 1);
   }
 
-  async manifest(startAddress) {
-    await this.setAddress(startAddress);
+  async manifest() {
+    // SPIKE-RT v0.2.0が利用するpydfu.pyと同じく、DFU終了時は
+    // SPIKE-RTの配置先0x08008000ではなくブート先0x08000000を指定する。
+    await this.setAddress(SPIKE_BOOT_ADDRESS);
     try {
       await this.device.download(new ArrayBuffer(0), 0);
       await this.device.pollUntil(
@@ -181,18 +159,16 @@ export class SpikeDfuSeFlasher {
         15000,
       );
     } catch (error) {
-      const message = messageOf(error);
-      if (!/disconnected|unavailable|device was disconnected|NotFoundError/i.test(message)) {
+      if (!isExpectedResetError(error)) {
         throw error;
       }
-      this.log("Hubが再起動のためUSBから切断されました。");
+      this.log("HubがDFU終了・再起動のためUSBから切断されました。");
     }
 
     try {
       await this.device.usbDevice.reset();
     } catch (error) {
-      const message = messageOf(error);
-      if (!/disconnected|unavailable|Unable to reset|NotFoundError|NetworkError/i.test(message)) {
+      if (!isExpectedResetError(error)) {
         throw error;
       }
     }
@@ -213,11 +189,11 @@ export class SpikeDfuSeFlasher {
     await this.erase(startAddress, firmware.byteLength);
     this.log("ファームウェアを書き込んでいます。");
     await this.write(startAddress, firmware);
-    this.log("書き込み内容を読み戻して検証しています。");
-    await this.verify(startAddress, firmware);
-    this.log("検証に成功しました。Hubを再起動します。");
+    this.log("書き込み後のDFU状態を確認しています。");
+    await this.verifyWriteState();
+    this.log("書き込みに成功しました。Hubを再起動します。");
     this.onProgress("manifest", 0, 1);
-    await this.manifest(startAddress);
+    await this.manifest();
     this.onProgress("manifest", 1, 1);
   }
 }
